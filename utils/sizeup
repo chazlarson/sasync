@@ -2,7 +2,8 @@
 # Simple python script for grabbing rclone size for remotes and pushing to a google sheet
 # Syntax = `./sizeup` or `./sizeup string` to only update remotes with `string` in the name`
 
-import sys, gspread, os, subprocess, json, datetime, re, yaml, confuse, httplib2, pathlib
+import sys, gspread, os, subprocess, json, datetime, re, yaml, confuse, httplib2
+#from oauth2client.service_account import ServiceAccountCredentials
 from google.oauth2.service_account import Credentials
 from httplib2 import Http
 
@@ -11,9 +12,8 @@ scopes = ['https://spreadsheets.google.com/feeds',
          'https://www.googleapis.com/auth/drive']
 
 #Init config
-conf_yaml = str(pathlib.Path(__file__).parent) + "/sizeup.yaml"
 config = confuse.Configuration('config')
-config.set_file(conf_yaml)
+config.set_file('sizeup.chaz.yaml')
 
 #Load service account for needed credentials for google sheets. Drive and GSheets API needs to be enabled.
 gc = gspread.authorize(Credentials.from_service_account_file(config['credentials']['service_account'].get(str), scopes=scopes))
@@ -21,19 +21,53 @@ gc = gspread.authorize(Credentials.from_service_account_file(config['credentials
 #gspread vars for loading up the google sheet and editing it.
 gsheet = config['sheet']['gsheet'].get()
 wsheet = config['sheet']['wsheet'].get()
-
-sh = gc.open(config['sheet']['gsheet'].get())
-worksheet = sh.worksheet(config['sheet']['wsheet'].get())
-remotes = worksheet.col_values(1)
-remotes.pop(0)
-remotes2 = remotes
-arg_len = len(sys.argv)-1
+gsheet_user = config['credentials']['user_email'].get()
 
 try:
-    for i in range(arg_len):
-        remotes = [rem for rem in remotes if sys.argv[i+1] in rem]
+    sys.argv[1]
+except IndexError:
+    matchpattern = "."
+else:
+    matchpattern = sys.argv[1]
+    
+try:
+    sh = gc.open(gsheet)
+except:
+    # create the workbook
+    print("Creating the google sheet")
+    sh = gc.create(gsheet)
+    sh.share(gsheet_user, perm_type='user', role='writer')
+    # create the sheet
+    if wsheet != 'Sheet1':
+        worksheet = sh.add_worksheet(title=wsheet, rows="100", cols="20")
+
+        worksheet = sh.sheet1
+        sh.del_worksheet(worksheet)
+
+    worksheet = sh.worksheet(wsheet)
+
+    # create headers
+    worksheet.update('A1', 'REMOTE NAME')
+    worksheet.update('B1', 'FILE COUNT')
+    worksheet.update('C1', 'SIZE [GB]')
+    worksheet.update('D1', 'SIZE [B]')
+    worksheet.update('E1', 'UPDATED')
+    worksheet.update('F1', 'CT CHG')
+    worksheet.update('G1', 'PREV CT')
+    worksheet.update('H1', 'PREV GB')
+    worksheet.update('I1', 'PREV BYTES')
+    worksheet.update('J1', 'PREV UPDATE')
+    worksheet.format('A1:J1', {'textFormat': {'bold': True}})
+    # create conditional formatting
+
+worksheet = sh.worksheet(wsheet)
+remotes = worksheet.col_values(1)
+remotes2 = remotes
+
+try:
+    remotes = [rem for rem in remotes if matchpattern in rem]
     if not any(remotes):
-        remotes = [rem for rem in remotes2 if rem in sys.argv[1]]
+        remotes = [rem for rem in remotes2 if rem in matchpattern]
     print(f"Updating size of remotes in {wsheet}, file {gsheet}")
     for i in remotes:
         print(f"\t{i}")
@@ -42,47 +76,53 @@ except:
 
 try:
     if not any(remotes):
-        remotes = subprocess.check_output(f"rclone listremotes | egrep -h {sys.argv[1]}", shell=True, universal_newlines=True).splitlines()
+        remotes = subprocess.check_output(f"rclone listremotes | egrep -h {matchpattern}", shell=True, universal_newlines=True).splitlines()
         print(f"Adding remotes to {gsheet}")
         for i in remotes:
             print(f"\t{i}")
 except:
-    print(f"No remotes in gsheet or rclone config that match {sys.argv[1]}")
+    print(f"No remotes in gsheet or rclone config that match {matchpattern}")
     exit()
 
 for remote in remotes:
-    try:
-        print(f"Remote is {remote}")
-        rem_size = subprocess.check_output(f"rclone size --json {remote} --fast-list --exclude /backup/**", shell=True)
-        parsed_json = json.loads(rem_size)
-        print(json.dumps(parsed_json, indent=4, sort_keys=True))
-
-        remcount = int(parsed_json['count'])
-        remsize = int(parsed_json['bytes'])
-        remsizeGB = int(parsed_json['bytes'] / (1024**3))
-        nowtime = str(datetime.date.today())
-
-        print(f"Remote name          = {remote}")
-        print(f"Remote file count    = {remcount}")
-        print(f"Remote size in GB    = {remsizeGB}")
-        print(f"Remote size in bytes = {remsize}")
-
+    if remote != 'REMOTE NAME':
         try:
-            cell = worksheet.find(remote)
-            print(f"Found string {remote} in Row {cell.row}, Column {cell.col}")
-            range_build = 'A' + str(cell.row) + ':E' + str(cell.row)
-            print(range_build)
-            cell_list = worksheet.range(range_build)
-            cell_values = [remote, remcount, remsizeGB, remsize, nowtime]
-            for i, val in enumerate(cell_values):
-                cell_list[i].value = val
-            print(cell_list[2].value)
-            worksheet.update_cells(cell_list)
+            print(f"Remote is [{remote}]")
+            rem_size = subprocess.check_output(f"rclone size --json {remote} --fast-list --exclude /backup/**", shell=True)
+            parsed_json = json.loads(rem_size)
+            print(json.dumps(parsed_json, indent=4, sort_keys=True))
+
+            remcount = int(parsed_json['count'])
+            remsize = int(parsed_json['bytes'])
+            remsizeGB = int(parsed_json['bytes'] / (1024**3))
+            nowtime = str(datetime.date.today())
+
+            print(f"Remote name          = {remote}")
+            print(f"Remote file count    = {remcount}")
+            print(f"Remote size in GB    = {remsizeGB}")
+            print(f"Remote size in bytes = {remsize}")
+
+
+
+            try:
+                cell = worksheet.find(remote)
+                print(f"Found string {remote} in Row {cell.row}, Column {cell.col}")
+                range_build = 'A' + str(cell.row) + ':J' + str(cell.row)
+                formula_build = '=B' + str(cell.row) + '-G' + str(cell.row)
+                cell_list = worksheet.range(range_build)
+                cell_values = [remote, remcount, remsizeGB, remsize, nowtime]
+                for i, val in enumerate(cell_values):
+                    if i > 0:
+                        cell_list[i+5].value = cell_list[i].value
+                    cell_list[i].value = val
+                cell_list[5].value = formula_build
+                worksheet.update_cells(cell_list, value_input_option='USER_ENTERED')
+
+            except:
+                print(f"Remote {remote} not found, add line")
+                cell_values = [remote, remcount, remsizeGB, remsize, nowtime]
+                worksheet.append_row(cell_values)
         except:
-            print(f"Remote {remote} not found, add line")
-            cell_values = [remote, remcount, remsizeGB, remsize, nowtime]
-            worksheet.append_row(cell_values)
-    except:
-        pass
+            pass
 
 exit()
