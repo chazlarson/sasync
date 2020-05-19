@@ -3,3 +3,4 @@ sheet:
   wsheet: Sheet1
 credentials:
   service_account: '/opt/sa/1.json'
+  user_email: you@whatever.tld
